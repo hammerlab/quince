@@ -1,4 +1,4 @@
 quince
 ======
 
-Scalable genome variant analytics using the ADAM project
+Scalable genome variant analytics using [BDG-formatted](https://github.com/bigdatagenomics/bdg-formats) data
