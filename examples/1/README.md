@@ -1,3 +1,5 @@
+This follows the Broad schema for their scalable variant store tests.
+
 First download the 1000 Genome VCF data into HDFS like so (this can be
 parallelized across the cluster):
 
@@ -25,7 +27,7 @@ parallelized across the cluster):
     curl -s ftp://ftp-trace.ncbi.nih.gov/1000genomes/ftp/release/20110521/ALL.chr15.phase1_release_v3.20101123.snps_indels_svs.genotypes.vcf.gz | gunzip | hadoop fs -put - /user/laserson/1kg/vcf/ALL.chr15.phase1_release_v3.20101123.snps_indels_svs.genotypes.vcf
     curl -s ftp://ftp-trace.ncbi.nih.gov/1000genomes/ftp/release/20110521/ALL.chr1.phase1_release_v3.20101123.snps_indels_svs.genotypes.vcf.gz | gunzip | hadoop fs -put - /user/laserson/1kg/vcf/ALL.chr1.phase1_release_v3.20101123.snps_indels_svs.genotypes.vcf
 
-Then convert to Avro using the VCFtoParquet impl:
+Then convert to Parquet using the VCFtoParquet impl:
 
     hadoop jar vcf-0.1.0-jar-with-dependencies.jar \
         com.cloudera.science.vcf.VCFtoParquetDriver \
@@ -36,73 +38,98 @@ Then convert to Avro using the VCFtoParquet impl:
         hdfs:///user/laserson/1kg/vcf \
         hdfs:///user/laserson/1kg/parquet_unpartitioned
 
-xPlace the schema somewhere in HFDS:
-x
-x    hadoop jar vcf-0.1.0-jar-with-dependencies.jar \
-x        com.cloudera.science.vcf.VCFtoAvroSchema \
-x        flat \
-x        hdfs:///user/laserson/1kg/vcf
-x
-xRegister table with Hive:
-x
-x    SET hive.exec.compress.output=true;
-x    SET avro.output.codec=snappy;
-x    
-x    CREATE EXTERNAL TABLE 1kg_avro
-x    ROW FORMAT
-x        SERDE 'org.apache.hadoop.hive.serde2.avro.AvroSerDe'
-x    STORED AS
-x        INPUTFORMAT 'org.apache.hadoop.hive.ql.io.avro.AvroContainerInputFormat'
-x        OUTPUTFORMAT 'org.apache.hadoop.hive.ql.io.avro.AvroContainerOutputFormat'
-x    LOCATION '/user/laserson/1kg/avro'
-x    TBLPROPERTIES ('avro.schema.url'='hdfs:///user/laserson/1kg/schemas/1kg.flat.avsc');
+Compile the UDFs for the Broad schema and register them in Impala
 
-In Impala, rewrite as partitioned Parquet table:
+    cd examples/1/src
+    cmake .
+    make
+    register-impala-udfs.py -i build/broad.ll -o /user/laserson/udfs/broad.ll \
+            -j bottou01-10g.pa.cloudera.com -k bottou01-10g.pa.cloudera.com \
+            -u laserson -d laserson -f \
+            -n GenerateId -t STRING \
+            -n GenotypeAsInt -t INT \
+            -n LogLikelihoodRef -t DOUBLE \
+            -n LogLikelihoodHet -t DOUBLE \
+            -n LogLikelihoodAlt -t DOUBLE \
+            -n IsTransition -t BOOLEAN \
+            -n IsInsertion -t BOOLEAN \
+            -n NoCall -t BOOLEAN
 
-    CREATE TABLE 1kg_parquet (
-        VCF_CHROM_INTERNAL STRING,
-        VCF_POS INT,
-        VCF_ID STRING,
-        VCF_REF STRING,
-        VCF_ALT STRING,
-        VCF_QUAL DOUBLE,
-        VCF_SAMPLE STRING,
-        VCF_FILTER STRING,
-        VCF_INFO_LDAF DOUBLE,
-        VCF_INFO_AVGPOST DOUBLE,
-        VCF_INFO_RSQ DOUBLE,
-        VCF_INFO_ERATE DOUBLE,
-        VCF_INFO_THETA DOUBLE,
-        VCF_INFO_CIEND STRING,
-        VCF_INFO_CIPOS STRING,
-        VCF_INFO_END INT,
-        VCF_INFO_HOMLEN STRING,
-        VCF_INFO_HOMSEQ STRING,
-        VCF_INFO_SVLEN INT,
-        VCF_INFO_SVTYPE STRING,
-        VCF_INFO_AC STRING,
-        VCF_INFO_AN INT,
-        VCF_INFO_AA STRING,
-        VCF_INFO_AF DOUBLE,
-        VCF_INFO_AMR_AF DOUBLE,
-        VCF_INFO_ASN_AF DOUBLE,
-        VCF_INFO_AFR_AF DOUBLE,
-        VCF_INFO_EUR_AF DOUBLE,
-        VCF_INFO_VT STRING,
-        VCF_INFO_SNPSOURCE STRING,
-        VCF_CALL_GT STRING,
-        VCF_CALL_DS DOUBLE,
-        VCF_CALL_GL STRING
+Also make sure the chromosome segment UDF is registered (quince.h):
+
+    cd impala
+    cmake .
+    make
+    register-impala-udfs.py -i build/quince.ll -o /user/laserson/udfs/quince.ll \
+            -j bottou01-10g.pa.cloudera.com -k bottou01-10g.pa.cloudera.com \
+            -u laserson -d laserson -f \
+            -n ChrSegment -t INT
+
+In Impala, rewrite as partitioned Parquet table with Broad schema:
+
+    CREATE TABLE 1kg_broad (
+        CHROM_INTERNAL STRING,
+        POS INT,
+        _ID_ STRING,
+        SAMPLE STRING,
+        GT INT,
+        NC BOOLEAN,
+        TYPE STRING,
+        IS_TI BOOLEAN,
+        IS_INS BOOLEAN,
+        LHET DOUBLE,
+        LHREF DOUBLE,
+        LHVAR DOUBLE
     )
-    PARTITIONED BY (VCF_CHROM STRING, SEGMENT INT)
+    PARTITIONED BY (CHROM STRING, SEGMENT INT)
     STORED AS PARQUET;
 
-    INSERT OVERWRITE TABLE 1kg_parquet
+    # This insert is split in half because of memory constraints
+    
+    INSERT OVERWRITE TABLE 1kg_broad
+    PARTITION (CHROM, SEGMENT)
+    [SHUFFLE]
+    SELECT
+        VCF_CHROM,
+        VCF_POS,
+        GenerateId(VCF_CHROM, VCF_POS, VCF_REF, VCF_ALT),
+        VCF_SAMPLE,
+        GenotypeAsInt(VCF_CALL_GT),
+        NoCall(VCF_CALL_GT),
+        VCF_INFO_VT,
+        IsTransition(VCF_REF, VCF_ALT),
+        IsInsertion(VCF_INFO_VT, VCF_REF, VCF_ALT),
+        pow(10, LogLikelihoodHet(VCF_CALL_GL)),
+        pow(10, LogLikelihoodRef(VCF_CALL_GL)),
+        pow(10, LogLikelihoodAlt(VCF_CALL_GL)),
+        VCF_CHROM,
+        ChrSegment(VCF_POS, 1000)
+    FROM
+        1kg_parquet_unpartitioned
+    WHERE
+        (VCF_CHROM = '1' OR VCF_CHROM = '2' OR VCF_CHROM = '3' OR VCF_CHROM = '3'
+        OR VCF_CHROM = '5' OR VCF_CHROM = '6' OR VCF_CHROM = '7' OR VCF_CHROM = '8');
+    
+    INSERT INTO TABLE 1kg_broad
     PARTITION (VCF_CHROM, SEGMENT)
     [SHUFFLE]
     SELECT
-        *,
         VCF_CHROM,
-        CAST(FLOOR(VCF_POS / 10000000.) AS INT)
+        VCF_POS,
+        GenerateId(VCF_CHROM, VCF_POS, VCF_REF, VCF_ALT),
+        VCF_SAMPLE,
+        GenotypeAsInt(VCF_CALL_GT),
+        NoCall(VCF_CALL_GT),
+        VCF_INFO_VT,
+        IsTransition(VCF_REF, VCF_ALT),
+        IsInsertion(VCF_INFO_VT, VCF_REF, VCF_ALT),
+        pow(10, LogLikelihoodHet(VCF_CALL_GL)),
+        pow(10, LogLikelihoodRef(VCF_CALL_GL)),
+        pow(10, LogLikelihoodAlt(VCF_CALL_GL)),
+        VCF_CHROM,
+        ChrSegment(VCF_POS, 1000)
     FROM
-        1kg_parquet_unpartitioned;
+        1kg_parquet_unpartitioned
+    WHERE
+        (VCF_CHROM != '1' AND VCF_CHROM != '2' AND VCF_CHROM != '3' AND VCF_CHROM != '3'
+        AND VCF_CHROM != '5' AND VCF_CHROM != '6' AND VCF_CHROM != '7' AND VCF_CHROM != '8');

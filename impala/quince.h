@@ -19,9 +19,6 @@
 
 using namespace impala_udf;
 
-BooleanVal IsTransition(FunctionContext* context, const StringVal& reference, const StringVal& alternate);
-BooleanVal NoCall(FunctionContext* context, const StringVal& genotype);
-IntVal ChrSegment(FunctionContext* context, const IntVal& pos);
-IntVal ChrSegment(FunctionContext* context, const IntVal& pos, const Intval& size_kb);
+IntVal ChrSegment(FunctionContext* context, const IntVal& pos, const IntVal& size_kb);
 
 #endif

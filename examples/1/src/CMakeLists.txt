@@ -27,5 +27,5 @@ file(MAKE_DIRECTORY build)
 
 # Custom targest to cross compile UDA/UDF to ir
 if (CLANG_EXECUTABLE)
-  COMPILE_TO_IR(quince.cc)
+  COMPILE_TO_IR(broad.cc)
 endif(CLANG_EXECUTABLE)
