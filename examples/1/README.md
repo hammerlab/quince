@@ -2,6 +2,9 @@
 
 This follows the Broad schema for their scalable variant store tests.
 
+Compute statistics on the full 1000 Genome variant data set (>40 billion
+variants).
+
 
 ### The hardware
 
